@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+/* Custom micro-animations and utilities */
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.streaming-cursor::after {
+  content: "▊";
+  display: inline-block;
+  margin-left: 2px;
+  color: #3b82f6; /* Blue cursor matching user theme */
+  animation: cursor-blink 0.8s infinite;
+}
+
+/* Hide default browser scrollbars for clean custom scroll container */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.3);
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(156, 163, 175, 0.5);
+}
