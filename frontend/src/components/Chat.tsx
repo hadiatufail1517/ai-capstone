@@ -31,7 +31,7 @@ interface ChatSession {
 }
 
 const CHARACTER_LIMIT = 2000;
-const API_URL = 'http://localhost:5000/api/chat';
+const API_URL = import.meta.env.VITE_API_URL || 'https://chatbot-production-fea9.up.railway.app/api/chat';
 
 // Realistic pre-loaded chat histories
 const MOCK_CHATS: ChatSession[] = [
