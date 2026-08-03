@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 // Google Gemini API configuration settings
-export const MODEL_NAME = 'gemini-3.5-flash';
+export const MODEL_NAME = 'gemini-3.5-flash-lite';
 export const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 export const MAX_TOKENS = 2048;
 export const TEMPERATURE = 0.7;

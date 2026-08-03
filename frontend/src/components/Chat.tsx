@@ -31,7 +31,27 @@ interface ChatSession {
 }
 
 const CHARACTER_LIMIT = 2000;
-const API_URL = import.meta.env.VITE_API_URL || 'https://chatbot-production-fea9.up.railway.app/api/chat';
+const buildApiUrl = (): string => {
+  const envUrl = import.meta.env.VITE_API_URL;
+  if (envUrl && envUrl.trim() !== "") {
+    const trimmed = envUrl.trim();
+    if (trimmed.endsWith("/api/chat")) {
+      return trimmed;
+    }
+    if (trimmed.endsWith("/api")) {
+      return `${trimmed}/chat`;
+    }
+    if (trimmed.endsWith("/")) {
+      return `${trimmed}api/chat`;
+    }
+    return `${trimmed}/api/chat`;
+  }
+  return import.meta.env.DEV
+    ? "http://localhost:5000/api/chat"
+    : "https://chatbot-wbsr.onrender.com/api/chat";
+};
+
+const API_URL = buildApiUrl();
 
 // Realistic pre-loaded chat histories
 const MOCK_CHATS: ChatSession[] = [

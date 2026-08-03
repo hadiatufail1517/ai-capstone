@@ -5,39 +5,58 @@ import chatRouter from './routes/chat.js';
 const app = express();
 const port = process.env.PORT || 5000;
 
-// Enable CORS allowing requests from our Vite frontend dynamically (on any localhost port)
-app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps, curl, or same-origin)
-    if (!origin) return callback(null, true);
-    
-    // Check if the origin matches localhost on any port
-    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-    if (isLocalhost) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-}));
+// Allowed frontend origins
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:3000",
+  "https://chatbot-6qlw.vercel.app",
+];
 
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests without an Origin header (e.g. curl, Postman)
+      if (!origin) {
+        return callback(null, true);
+      }
 
-// Middleware to parse incoming JSON payloads
+      // Check if the origin matches any allowed origin, is local development, or ends with .vercel.app
+      const isAllowed =
+        allowedOrigins.includes(origin) ||
+        origin.startsWith("http://localhost:") ||
+        origin.startsWith("http://127.0.0.1:") ||
+        origin.endsWith(".vercel.app");
+
+      if (isAllowed) {
+        return callback(null, true);
+      }
+
+      console.error("Blocked by CORS:", origin);
+      // Return callback(null, false) instead of passing an Error object.
+      // This prevents Express from throwing a 500 error and allows the browser to block the request.
+      return callback(null, false);
+    },
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  })
+);
+
 app.use(express.json());
 
-// Healthcheck route
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString() });
+// Health Check
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    time: new Date().toISOString(),
+  });
 });
 
-// Chat api route
-app.use('/api/chat', chatRouter);
+// Chat API
+app.use("/api/chat", chatRouter);
 
-// Start the Express server
+// Start Server
 app.listen(port, () => {
-  console.log(`[Server] Express server running on port http://localhost:${port}`);
-  console.log(`[Server] Health check available at http://localhost:${port}/api/health`);
+  console.log(`🚀 Server running on port ${port}`);
+  console.log(`Health Check: /api/health`);
 });
