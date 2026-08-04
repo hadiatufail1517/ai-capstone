@@ -1,7 +1,98 @@
 import { Router, Request, Response } from 'express';
 import { getApiKey, MODEL_NAME, BASE_URL, MAX_TOKENS, TEMPERATURE, SYSTEM_PROMPT } from '../lib/aiConfig.js';
+import { websiteMetadata } from '../src/tools/websiteMetadata.js';
 
 const router = Router();
+
+// Helper to stream Gemini content and detect if it requests a tool call
+async function runGeminiStream(
+  contents: any[],
+  res: Response,
+  controller: AbortController
+): Promise<{ text: string; functionCall: any | null }> {
+  const apiKey = getApiKey();
+  const geminiUrl = `${BASE_URL}/models/${MODEL_NAME}:streamGenerateContent?alt=sse&key=${apiKey}`;
+
+  const requestBody = {
+    contents,
+    tools: [{
+      functionDeclarations: [websiteMetadata.geminiDeclaration]
+    }],
+    systemInstruction: {
+      parts: [{ text: SYSTEM_PROMPT }]
+    },
+    generationConfig: {
+      temperature: TEMPERATURE,
+      maxOutputTokens: MAX_TOKENS
+    }
+  };
+
+  const response = await fetch(geminiUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(requestBody),
+    signal: controller.signal
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    let errorJson;
+    try {
+      errorJson = JSON.parse(errorText);
+    } catch {
+      errorJson = null;
+    }
+    throw new Error(errorJson?.error?.message || errorJson?.error || `HTTP error! Status: ${response.status} - ${errorText}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error('ReadableStream is not supported on Gemini response.');
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let accumulatedText = '';
+  let detectedFunctionCall: any = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const cleanLine = line.trim();
+      if (!cleanLine.startsWith('data: ')) continue;
+      
+      const rawData = cleanLine.substring(6);
+      if (rawData === '[DONE]') continue;
+
+      try {
+        const parsed = JSON.parse(rawData);
+        const part = parsed.candidates?.[0]?.content?.parts?.[0];
+        
+        if (part) {
+          if (part.text) {
+            accumulatedText += part.text;
+            res.write(`data: ${JSON.stringify({ text: part.text })}\n\n`);
+          }
+          if (part.functionCall) {
+            detectedFunctionCall = part.functionCall;
+          }
+        }
+      } catch (jsonErr) {
+        console.error('[Error] Failed to parse Gemini SSE line:', jsonErr, 'Raw line:', cleanLine);
+      }
+    }
+  }
+
+  return { text: accumulatedText, functionCall: detectedFunctionCall };
+}
 
 router.post('/', async (req: Request, res: Response): Promise<void> => {
   const { messages } = req.body;
@@ -13,13 +104,65 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
   }
 
   // Filter, validate, and format messages for Google Gemini
-  // Gemini's contents API expects roles to be either 'user' or 'model'
-  const formattedContents = messages
-    .filter((m: any) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
-    .map((m: any) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }]
-    }));
+  // We format both text messages and tool calls/responses
+  const formattedContents: any[] = [];
+  for (const m of messages) {
+    if (m.role === 'user') {
+      formattedContents.push({
+        role: 'user',
+        parts: [{ text: m.content }]
+      });
+    } else if (m.role === 'assistant') {
+      const parts: any[] = [];
+      if (m.content) {
+        parts.push({ text: m.content });
+      }
+      if (m.toolCalls && m.toolCalls.length > 0) {
+        for (const tc of m.toolCalls) {
+          parts.push({
+            functionCall: {
+              name: tc.name,
+              args: tc.args
+            }
+          });
+        }
+      }
+
+      if (parts.length > 0) {
+        formattedContents.push({
+          role: 'model',
+          parts
+        });
+      }
+
+      // Appending tool responses immediately following model message
+      if (m.toolCalls && m.toolCalls.length > 0) {
+        for (const tc of m.toolCalls) {
+          if (tc.state === 'output-available') {
+            formattedContents.push({
+              role: 'user',
+              parts: [{
+                functionResponse: {
+                  name: tc.name,
+                  response: { output: tc.output }
+                }
+              }]
+            });
+          } else if (tc.state === 'output-error') {
+            formattedContents.push({
+              role: 'user',
+              parts: [{
+                functionResponse: {
+                  name: tc.name,
+                  response: { error: tc.error }
+                }
+              }]
+            });
+          }
+        }
+      }
+    }
+  }
 
   if (formattedContents.length === 0 || formattedContents[0].role !== 'user') {
     res.status(400).json({ error: 'Chat history must start with a user message.' });
@@ -43,80 +186,103 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
   });
 
   try {
-    // Retrieve the Gemini API Key
-    const apiKey = getApiKey();
+    let currentContents = [...formattedContents];
+    let loopCount = 0;
+    const maxLoops = 5; // safety limit to prevent infinite loops
 
-    // Stream content endpoint from Gemini REST API
-    const geminiUrl = `${BASE_URL}/models/${MODEL_NAME}:streamGenerateContent?alt=sse&key=${apiKey}`;
+    while (loopCount < maxLoops) {
+      loopCount++;
+      const { text, functionCall } = await runGeminiStream(currentContents, res, controller);
 
-    // Call Gemini API with streaming enabled
-    const response = await fetch(geminiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        contents: formattedContents,
-        systemInstruction: {
-          parts: [{ text: SYSTEM_PROMPT }]
-        },
-        generationConfig: {
-          temperature: TEMPERATURE,
-          maxOutputTokens: MAX_TOKENS
-        }
-      }),
-      signal: controller.signal
-    });
+      if (functionCall) {
+        const toolName = functionCall.name;
+        const toolArgs = functionCall.args;
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      let errorJson;
-      try {
-        errorJson = JSON.parse(errorText);
-      } catch {
-        errorJson = null;
-      }
-      throw new Error(errorJson?.error?.message || errorJson?.error || `HTTP error! Status: ${response.status} - ${errorText}`);
-    }
+        if (toolName === 'websiteMetadata') {
+          // 1. Stream input-streaming state
+          res.write(`data: ${JSON.stringify({
+            toolCall: {
+              name: 'websiteMetadata',
+              state: 'input-streaming',
+              args: {}
+            }
+          })}\n\n`);
 
-    const reader = response.body?.getReader();
-    if (!reader) {
-      throw new Error('ReadableStream is not supported on Gemini response.');
-    }
+          // 2. Stream input-available state
+          res.write(`data: ${JSON.stringify({
+            toolCall: {
+              name: 'websiteMetadata',
+              state: 'input-available',
+              args: toolArgs
+            }
+          })}\n\n`);
 
-    const decoder = new TextDecoder();
-    let buffer = '';
+          // 3. Execute the tool
+          try {
+            const result = await websiteMetadata.execute(toolArgs);
 
-    // Stream the data chunks to the client
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+            // 4. Stream output-available state
+            res.write(`data: ${JSON.stringify({
+              toolCall: {
+                name: 'websiteMetadata',
+                state: 'output-available',
+                args: toolArgs,
+                output: result
+              }
+            })}\n\n`);
 
-      // Append decoded string to buffer
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
+            // Append model functionCall and functionResponse to feed back to Gemini
+            currentContents.push({
+              role: 'model',
+              parts: [{ functionCall }]
+            });
+            currentContents.push({
+              role: 'user',
+              parts: [{
+                functionResponse: {
+                  name: 'websiteMetadata',
+                  response: { output: result }
+                }
+              }]
+            });
 
-      // Keep the final potentially incomplete line in buffer
-      buffer = lines.pop() || '';
+            // Loop again so Gemini continues generating based on the tool result
+            continue;
+          } catch (err: any) {
+            console.error('[Tool Error] Failed to execute tool:', err);
 
-      for (const line of lines) {
-        const cleanLine = line.trim();
-        if (!cleanLine.startsWith('data: ')) continue;
-        
-        const rawData = cleanLine.substring(6);
+            // Stream output-error state
+            res.write(`data: ${JSON.stringify({
+              toolCall: {
+                name: 'websiteMetadata',
+                state: 'output-error',
+                args: toolArgs,
+                error: err.message || 'An error occurred during tool execution.'
+              }
+            })}\n\n`);
 
-        try {
-          const parsed = JSON.parse(rawData);
-          const textChunk = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-          
-          if (textChunk) {
-            // Stream the text token to the client in standard format
-            res.write(`data: ${JSON.stringify({ text: textChunk })}\n\n`);
+            // Append model functionCall and functionResponse (with error)
+            currentContents.push({
+              role: 'model',
+              parts: [{ functionCall }]
+            });
+            currentContents.push({
+              role: 'user',
+              parts: [{
+                functionResponse: {
+                  name: 'websiteMetadata',
+                  response: { error: err.message }
+                }
+              }]
+            });
+
+            continue;
           }
-        } catch (jsonErr) {
-          console.error('[Error] Failed to parse Gemini SSE line:', jsonErr, 'Raw line:', cleanLine);
         }
       }
+
+      // If no tool call was returned, the assistant has generated its final response text
+      break;
     }
 
     // Send closing tag to signal client that streaming is complete

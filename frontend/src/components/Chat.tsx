@@ -16,12 +16,31 @@ import {
   ArrowDown,
   MessageSquare
 } from 'lucide-react';
+import ToolLoading from './ToolLoading';
+import ToolInput from './ToolInput';
+import MetadataCard from './MetadataCard';
+import ToolError from './ToolError';
+
+export interface ToolCall {
+  name: string;
+  state: 'input-streaming' | 'input-available' | 'output-available' | 'output-error';
+  args: { url?: string };
+  output?: {
+    title: string;
+    description: string;
+    image: string | null;
+    author: string | null;
+    keywords: string[];
+  };
+  error?: string;
+}
 
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   isError?: boolean;
+  toolCalls?: ToolCall[];
 }
 
 interface ChatSession {
@@ -229,7 +248,7 @@ export default function Chat() {
         return {
           ...c,
           title,
-          messages: [...c.messages, userMessage, { id: assistantMessageId, role: 'assistant', content: '' }]
+          messages: [...c.messages, userMessage, { id: assistantMessageId, role: 'assistant', content: '', toolCalls: [] }]
         };
       }
       return c;
@@ -283,6 +302,36 @@ export default function Chat() {
             
             if (parsed.error) {
               throw new Error(parsed.error);
+            }
+
+            if (parsed.toolCall) {
+              if (!hasReceivedFirstToken) {
+                setIsThinking(false);
+                hasReceivedFirstToken = true;
+              }
+              const toolCall = parsed.toolCall;
+              setChats(prev => prev.map(c => {
+                if (c.id === activeChatId) {
+                  return {
+                    ...c,
+                    messages: c.messages.map(m => {
+                      if (m.id === assistantMessageId) {
+                        const existingToolCalls = m.toolCalls || [];
+                        const updatedToolCalls = [...existingToolCalls];
+                        const idx = updatedToolCalls.findIndex(tc => tc.name === toolCall.name);
+                        if (idx >= 0) {
+                          updatedToolCalls[idx] = { ...updatedToolCalls[idx], ...toolCall };
+                        } else {
+                          updatedToolCalls.push(toolCall);
+                        }
+                        return { ...m, toolCalls: updatedToolCalls };
+                      }
+                      return m;
+                    })
+                  };
+                }
+                return c;
+              }));
             }
 
             if (parsed.text) {
@@ -421,18 +470,18 @@ export default function Chat() {
         const code = match ? match[2] : part.slice(3, -3);
 
         return (
-          <div key={index} className="my-3 rounded-lg border border-zinc-800 bg-[#0d0d0d] overflow-hidden font-mono text-[13px] text-zinc-300 shadow-lg">
+          <div key={index} className="my-3 rounded-lg border border-slate-200 bg-slate-50 overflow-hidden font-mono text-[13px] text-slate-800 shadow-md">
             {/* Code Block Header */}
-            <div className="flex justify-between items-center px-4 py-2 bg-zinc-900 border-b border-zinc-800 text-xs text-zinc-400 font-sans select-none">
+            <div className="flex justify-between items-center px-4 py-2 bg-slate-200 border-b border-slate-300 text-xs text-slate-600 font-sans select-none">
               <span>{language || 'code'}</span>
               <button 
                 onClick={() => handleCopyToClipboard(code, `code-${index}`)}
-                className="flex items-center gap-1.5 hover:text-white transition-colors cursor-pointer"
+                className="flex items-center gap-1.5 hover:text-slate-900 transition-colors cursor-pointer"
               >
                 {copiedId === `code-${index}` ? (
                   <>
-                    <Check className="w-3.5 h-3.5 text-green-500" />
-                    <span className="text-green-500 font-medium">Copied!</span>
+                    <Check className="w-3.5 h-3.5 text-green-600" />
+                    <span className="text-green-600 font-medium">Copied!</span>
                   </>
                 ) : (
                   <>
@@ -459,19 +508,19 @@ export default function Chat() {
 
             // Render headers
             if (cleanLine.startsWith('### ')) {
-              return <h4 key={lineIdx} className="text-base font-bold text-white mt-4 mb-1 tracking-tight">{cleanLine.substring(4)}</h4>;
+              return <h4 key={lineIdx} className="text-base font-bold text-slate-800 mt-4 mb-1 tracking-tight">{cleanLine.substring(4)}</h4>;
             }
             if (cleanLine.startsWith('## ')) {
-              return <h3 key={lineIdx} className="text-lg font-bold text-white mt-5 mb-1.5 tracking-tight">{cleanLine.substring(3)}</h3>;
+              return <h3 key={lineIdx} className="text-lg font-bold text-slate-800 mt-5 mb-1.5 tracking-tight">{cleanLine.substring(3)}</h3>;
             }
             if (cleanLine.startsWith('# ')) {
-              return <h2 key={lineIdx} className="text-xl font-extrabold text-white mt-6 mb-2 tracking-tight">{cleanLine.substring(2)}</h2>;
+              return <h2 key={lineIdx} className="text-xl font-extrabold text-slate-800 mt-6 mb-2 tracking-tight">{cleanLine.substring(2)}</h2>;
             }
 
             // Render bullet points
             if (cleanLine.startsWith('- ') || cleanLine.startsWith('* ')) {
               return (
-                <ul key={lineIdx} className="list-disc pl-6 space-y-1 text-zinc-300">
+                <ul key={lineIdx} className="list-disc pl-6 space-y-1 text-slate-700">
                   <li>{parseInlineFormatting(cleanLine.substring(2))}</li>
                 </ul>
               );
@@ -481,7 +530,7 @@ export default function Chat() {
             if (/^\d+\.\s/.test(cleanLine)) {
               const dotIdx = cleanLine.indexOf('.');
               return (
-                <ol key={lineIdx} className="list-decimal pl-6 space-y-1 text-zinc-300">
+                <ol key={lineIdx} className="list-decimal pl-6 space-y-1 text-slate-700">
                   <li>{parseInlineFormatting(cleanLine.substring(dotIdx + 2))}</li>
                 </ol>
               );
@@ -493,7 +542,7 @@ export default function Chat() {
             }
 
             // Standard paragraph
-            return <p key={lineIdx} className="text-zinc-300 leading-relaxed">{parseInlineFormatting(cleanLine)}</p>;
+            return <p key={lineIdx} className="text-slate-700 leading-relaxed">{parseInlineFormatting(cleanLine)}</p>;
           })}
         </div>
       );
@@ -506,14 +555,14 @@ export default function Chat() {
     
     return boldParts.map((bPart, bIdx) => {
       if (bPart.startsWith('**') && bPart.endsWith('**')) {
-        return <strong key={bIdx} className="font-semibold text-white">{bPart.slice(2, -2)}</strong>;
+        return <strong key={bIdx} className="font-semibold text-slate-800">{bPart.slice(2, -2)}</strong>;
       }
       
       const codeParts = bPart.split(/(`.*?`)/g);
       return codeParts.map((cPart, cIdx) => {
         if (cPart.startsWith('`') && cPart.endsWith('`')) {
           return (
-            <code key={cIdx} className="px-1.5 py-0.5 rounded bg-zinc-800 font-mono text-[12.5px] text-zinc-200 border border-zinc-700/40">
+            <code key={cIdx} className="px-1.5 py-0.5 rounded bg-slate-100 font-mono text-[12.5px] text-slate-800 border border-slate-200">
               {cPart.slice(1, -1)}
             </code>
           );
@@ -524,28 +573,28 @@ export default function Chat() {
   };
 
   return (
-    <div className="flex h-full w-full bg-[#212121] text-zinc-200 font-sans overflow-hidden">
+    <div className="flex h-full w-full bg-[#f8fafc] text-slate-800 font-sans overflow-hidden">
       
       {/* Sidebar - Collapsible chat history list */}
       <aside 
         className={`${
           sidebarOpen ? 'w-64 translate-x-0' : 'w-0 -translate-x-full md:w-0'
-        } shrink-0 bg-[#171717] h-full border-r border-zinc-800/40 flex flex-col transition-all duration-300 overflow-hidden z-20 absolute md:relative`}
+        } shrink-0 bg-slate-50 h-full border-r border-slate-200 flex flex-col transition-all duration-300 overflow-hidden z-20 absolute md:relative`}
       >
         {/* Sidebar Header */}
-        <div className="p-3.5 flex items-center justify-between border-b border-zinc-800/30">
+        <div className="p-3.5 flex items-center justify-between border-b border-slate-200">
           <button 
             onClick={handleNewChat}
-            className="flex-1 flex items-center gap-2 px-3 py-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-white rounded-lg text-sm font-medium transition-all cursor-pointer shadow-sm"
+            className="flex-1 flex items-center gap-2 px-3 py-2 bg-white hover:bg-slate-100 border border-slate-200 text-slate-800 rounded-lg text-sm font-medium transition-all cursor-pointer shadow-sm"
           >
-            <Plus className="w-4 h-4 text-blue-400" />
+            <Plus className="w-4 h-4 text-blue-600" />
             <span>New chat</span>
           </button>
           
           {/* Close Sidebar Button (Mobile/Tablet View) */}
           <button 
             onClick={() => setSidebarOpen(false)}
-            className="p-2 ml-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 md:hidden cursor-pointer"
+            className="p-2 ml-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-200/50 md:hidden cursor-pointer"
             aria-label="Close sidebar"
           >
             <X className="w-4 h-4" />
@@ -554,7 +603,7 @@ export default function Chat() {
 
         {/* History Chat List */}
         <div className="flex-1 overflow-y-auto p-3 space-y-1.5 custom-scrollbar select-none">
-          <div className="text-[10px] text-zinc-500 font-semibold px-2 uppercase tracking-wider mb-2">Recent Chats</div>
+          <div className="text-[10px] text-slate-400 font-semibold px-2 uppercase tracking-wider mb-2">Recent Chats</div>
           
           {chats.map((session) => {
             const isActive = session.id === activeChatId;
@@ -570,19 +619,19 @@ export default function Chat() {
                 }}
                 className={`w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-left text-sm transition-all group cursor-pointer ${
                   isActive 
-                    ? 'bg-zinc-800/80 text-white font-medium shadow-inner' 
-                    : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'
+                    ? 'bg-blue-50 text-blue-700 font-semibold shadow-sm' 
+                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
               >
                 <div className="flex items-center gap-2.5 overflow-hidden">
-                  <MessageSquare className={`w-4 h-4 shrink-0 ${isActive ? 'text-blue-400' : 'text-zinc-500'}`} />
+                  <MessageSquare className={`w-4 h-4 shrink-0 ${isActive ? 'text-blue-600' : 'text-slate-400'}`} />
                   <span className="truncate pr-1">{session.title}</span>
                 </div>
                 
                 {/* Delete history button */}
                 <button
                   onClick={(e) => handleDeleteChat(session.id, e)}
-                  className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-red-400 transition-all cursor-pointer"
+                  className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-slate-200 text-slate-400 hover:text-red-600 transition-all cursor-pointer"
                   title="Delete chat"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
@@ -593,46 +642,46 @@ export default function Chat() {
         </div>
 
         {/* Sidebar Footer User Section */}
-        <div className="p-3 bg-zinc-950/20 border-t border-zinc-800/30 flex items-center justify-between gap-3 shrink-0 select-none">
+        <div className="p-3 bg-slate-100 border-t border-slate-200 flex items-center justify-between gap-3 shrink-0 select-none">
           <div className="flex items-center gap-2.5 overflow-hidden">
-            <div className="w-8 h-8 rounded-full bg-blue-600/10 border border-blue-500/20 flex items-center justify-center text-blue-400 font-semibold text-xs shrink-0">
+            <div className="w-8 h-8 rounded-full bg-blue-100 border border-blue-200 flex items-center justify-center text-blue-600 font-semibold text-xs shrink-0">
               U
             </div>
             <div className="overflow-hidden">
-              <p className="text-xs font-semibold text-white truncate">Capstone Developer</p>
-              <p className="text-[10px] text-zinc-500 truncate">v1.2.0 (Gemini API)</p>
+              <p className="text-xs font-semibold text-slate-800 truncate">Capstone Developer</p>
+              <p className="text-[10px] text-slate-500 truncate">v1.2.0 (Gemini API)</p>
             </div>
           </div>
         </div>
       </aside>
 
       {/* Main Workspace Frame */}
-      <main className="flex-1 flex flex-col h-full overflow-hidden relative bg-[#212121]">
+      <main className="flex-1 flex flex-col h-full overflow-hidden relative bg-[#f8fafc]">
         
         {/* Header Ribbon */}
-        <header className="flex items-center justify-between px-4 py-3 bg-[#212121] border-b border-zinc-800/50 shadow-sm shrink-0 z-10 select-none">
+        <header className="flex items-center justify-between px-4 py-3 bg-white border-b border-slate-200 shadow-sm shrink-0 z-10 select-none">
           <div className="flex items-center gap-2">
             {/* Sidebar toggle */}
             <button 
               onClick={() => setSidebarOpen(!sidebarOpen)}
-              className="p-2 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60 cursor-pointer transition-colors"
+              className="p-2 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 cursor-pointer transition-colors"
               aria-label="Toggle sidebar"
             >
               <Menu className="w-5 h-5" />
             </button>
             
             <div className="flex items-center gap-2 ml-1">
-              <Sparkles className="w-4 h-4 text-blue-500 animate-pulse" />
-              <span className="font-semibold text-sm tracking-tight text-white">Capstone Chat AI</span>
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 border border-zinc-700 font-medium">Gemini 3.5 Flash</span>
+              <Sparkles className="w-4 h-4 text-blue-600 animate-pulse" />
+              <span className="font-semibold text-sm tracking-tight text-slate-800">Capstone Chat AI</span>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200 font-medium">Gemini 3.5 Flash</span>
             </div>
           </div>
           
           <button 
             onClick={handleNewChat}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs bg-zinc-800 hover:bg-zinc-700/80 border border-zinc-700 text-zinc-200 font-medium transition-all cursor-pointer shadow-sm"
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 font-medium transition-all cursor-pointer shadow-sm"
           >
-            <Plus className="w-3.5 h-3.5 text-blue-400" />
+            <Plus className="w-3.5 h-3.5 text-blue-600" />
             New Chat
           </button>
         </header>
@@ -641,7 +690,7 @@ export default function Chat() {
         <div 
           ref={scrollContainerRef}
           onScroll={handleScroll}
-          className="flex-1 overflow-y-auto px-4 md:px-6 py-6 space-y-6 custom-scrollbar bg-[#212121]"
+          className="flex-1 overflow-y-auto px-4 md:px-6 py-6 space-y-6 custom-scrollbar bg-[#f8fafc]"
         >
           {currentMessages.length === 0 ? (
             /* Elegant Empty State */
@@ -699,16 +748,59 @@ export default function Chat() {
                         </div>
                       ) : (
                         /* Assistant Markdown Text Block */
-                        <div className={`w-full text-zinc-200 text-sm space-y-2 leading-relaxed ${
-                          message.isError 
-                            ? 'px-4 py-3 rounded-2xl bg-red-950/20 text-red-200 border border-red-900/40' 
-                            : ''
-                        } ${
-                          isGenerating && currentMessages[currentMessages.length - 1].id === message.id 
-                            ? 'streaming-cursor' 
-                            : ''
-                        }`}>
-                          {parseMarkdown(message.content)}
+                        <div className="w-full flex flex-col gap-2">
+                          {message.toolCalls && message.toolCalls.map((tc, idx) => {
+                            if (tc.name === 'websiteMetadata') {
+                              switch (tc.state) {
+                                case 'input-streaming':
+                                  return <ToolLoading key={idx} />;
+                                case 'input-available':
+                                  return <ToolInput key={idx} url={tc.args?.url || ''} />;
+                                case 'output-available':
+                                  return (
+                                    <MetadataCard 
+                                      key={idx} 
+                                      url={tc.args?.url || ''} 
+                                      metadata={tc.output || {
+                                        title: '',
+                                        description: '',
+                                        image: null,
+                                        author: null,
+                                        keywords: []
+                                      }} 
+                                    />
+                                  );
+                                case 'output-error':
+                                  return (
+                                    <ToolError 
+                                      key={idx} 
+                                      url={tc.args?.url || ''} 
+                                      error={tc.error || 'Unknown error occurred'} 
+                                      onRetry={() => {
+                                        handleSend(`Fetch metadata for ${tc.args?.url}`);
+                                      }}
+                                    />
+                                  );
+                                default:
+                                  return null;
+                              }
+                            }
+                            return null;
+                          })}
+
+                          {message.content && (
+                            <div className={`w-full text-slate-800 text-sm space-y-2 leading-relaxed ${
+                              message.isError 
+                                ? 'px-4 py-3 rounded-2xl bg-red-50 text-red-800 border border-red-200' 
+                                : ''
+                            } ${
+                              isGenerating && currentMessages[currentMessages.length - 1].id === message.id 
+                                ? 'streaming-cursor' 
+                                : ''
+                            }`}>
+                              {parseMarkdown(message.content)}
+                            </div>
+                          )}
                         </div>
                       )}
 
@@ -717,13 +809,13 @@ export default function Chat() {
                         <div className="flex items-center gap-3 mt-1.5 px-1 opacity-0 group-hover:opacity-100 transition-opacity select-none">
                           <button
                             onClick={() => handleCopyToClipboard(message.content, message.id)}
-                            className="flex items-center gap-1 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+                            className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
                             title="Copy reply"
                           >
                             {copiedId === message.id ? (
                               <>
-                                <Check className="w-3 h-3 text-green-500" />
-                                <span className="text-green-500 font-medium font-sans">Copied!</span>
+                                <Check className="w-3 h-3 text-green-600" />
+                                <span className="text-green-600 font-medium font-sans">Copied!</span>
                               </>
                             ) : (
                               <>
@@ -738,7 +830,7 @@ export default function Chat() {
 
                     {/* User profile avatar (Right aligned) */}
                     {isUser && (
-                      <div className="w-8 h-8 rounded-full bg-blue-600/10 border border-blue-500/20 flex items-center justify-center text-blue-400 shadow-md shrink-0 font-semibold text-xs select-none">
+                      <div className="w-8 h-8 rounded-full bg-blue-100 border border-blue-200 flex items-center justify-center text-blue-600 shadow-sm shrink-0 font-semibold text-xs select-none">
                         U
                       </div>
                     )}
@@ -749,11 +841,11 @@ export default function Chat() {
               {/* Gemini Server-Sent Event (SSE) Thinking state */}
               {isThinking && (
                 <div className="flex gap-4 items-start justify-start">
-                  <div className="w-8 h-8 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-blue-500 shadow-md shrink-0 select-none">
+                  <div className="w-8 h-8 rounded-full bg-white border border-slate-200 flex items-center justify-center text-blue-600 shadow-sm shrink-0 select-none">
                     <Bot className="w-4 h-4" />
                   </div>
-                  <div className="flex items-center gap-2 text-zinc-400 shadow-sm text-sm py-1.5">
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-500" />
+                  <div className="flex items-center gap-2 text-slate-500 shadow-sm text-sm py-1.5">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600" />
                     <span className="font-sans select-none">Thinking...</span>
                   </div>
                 </div>
@@ -766,7 +858,7 @@ export default function Chat() {
         {showScrollButton && (
           <button 
             onClick={forceScrollToBottom}
-            className="absolute bottom-28 right-6 p-2 rounded-full bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-white shadow-xl hover:scale-105 active:scale-95 transition-all animate-bounce cursor-pointer z-10"
+            className="absolute bottom-28 right-6 p-2 rounded-full bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 shadow-md hover:scale-105 active:scale-95 transition-all animate-bounce cursor-pointer z-10"
             aria-label="Scroll to bottom"
           >
             <ArrowDown className="w-4 h-4" />
@@ -776,15 +868,15 @@ export default function Chat() {
         {/* Floating System-Level Error Notifications */}
         {error && (
           <div className="absolute top-16 left-1/2 transform -translate-x-1/2 max-w-md w-full px-4 z-20 animate-in fade-in slide-in-from-top-4">
-            <div className="flex items-start gap-2.5 p-3.5 rounded-xl bg-red-950 text-red-200 border border-red-900 shadow-lg text-sm">
-              <AlertCircle className="w-4.5 h-4.5 text-red-400 shrink-0 mt-0.5" />
+            <div className="flex items-start gap-2.5 p-3.5 rounded-xl bg-red-50 text-red-800 border border-red-200 shadow-md text-sm">
+              <AlertCircle className="w-4.5 h-4.5 text-red-500 shrink-0 mt-0.5" />
               <div className="flex-1">
                 <p className="font-semibold font-sans">Connection Error</p>
-                <p className="text-xs text-red-300/90 mt-0.5 font-sans">{error}</p>
+                <p className="text-xs text-red-700 mt-0.5 font-sans">{error}</p>
               </div>
               <button 
                 onClick={() => setError(null)} 
-                className="text-red-400 hover:text-red-200 text-xs font-semibold cursor-pointer font-sans"
+                className="text-red-500 hover:text-red-700 text-xs font-semibold cursor-pointer font-sans"
               >
                 Dismiss
               </button>
@@ -793,19 +885,19 @@ export default function Chat() {
         )}
 
         {/* Bottom Form Text Entry Area */}
-        <footer className="p-4 bg-[#212121] border-t border-zinc-800/40 shadow-lg shrink-0">
+        <footer className="p-4 bg-white border-t border-slate-200 shadow-lg shrink-0">
           <div className="max-w-[760px] mx-auto relative">
             
             <form 
               onSubmit={(e) => { e.preventDefault(); handleSend(); }}
-              className="flex flex-col rounded-3xl bg-[#2f2f2f] px-4 py-3 shadow-md focus-within:ring-1 focus-within:ring-zinc-700 transition-all"
+              className="flex flex-col rounded-3xl bg-slate-100 px-4 py-3 shadow-sm focus-within:ring-1 focus-within:ring-slate-300 transition-all"
             >
               <div className="flex items-start gap-3 w-full">
                 
                 {/* Non-functional attach clip button (for realistic design aesthetics) */}
                 <button
                   type="button"
-                  className="p-1 rounded-full text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/30 transition-all shrink-0 cursor-pointer"
+                  className="p-1 rounded-full text-slate-500 hover:text-slate-800 hover:bg-slate-200 transition-all shrink-0 cursor-pointer"
                   title="Attach file"
                 >
                   <Paperclip className="w-4.5 h-4.5" />
@@ -821,7 +913,7 @@ export default function Chat() {
                   onKeyDown={handleKeyDown}
                   placeholder={isGenerating ? "Gemini is writing..." : "Message Gemini..."}
                   disabled={isGenerating}
-                  className="flex-1 bg-transparent border-0 outline-none text-zinc-100 text-sm placeholder-zinc-500 resize-none max-h-[200px] min-h-[24px] focus:ring-0 leading-relaxed font-sans pr-1"
+                  className="flex-1 bg-transparent border-0 outline-none text-slate-800 text-sm placeholder-slate-400 resize-none max-h-[200px] min-h-[24px] focus:ring-0 leading-relaxed font-sans pr-1"
                   rows={1}
                 />
 
@@ -831,16 +923,16 @@ export default function Chat() {
                     <button
                       type="button"
                       onClick={handleStop}
-                      className="flex items-center justify-center w-8 h-8 bg-white text-black hover:bg-zinc-200 hover:scale-102 rounded-full transition-all shadow-sm cursor-pointer"
+                      className="flex items-center justify-center w-8 h-8 bg-slate-800 text-white hover:bg-slate-700 hover:scale-102 rounded-full transition-all shadow-sm cursor-pointer"
                       title="Stop response"
                     >
-                      <Square className="w-3 h-3 fill-current text-black" />
+                      <Square className="w-3 h-3 fill-current text-white" />
                     </button>
                   ) : (
                     <button
                       type="submit"
                       disabled={!input.trim() || input.length > CHARACTER_LIMIT}
-                      className="flex items-center justify-center w-8 h-8 bg-white hover:bg-zinc-200 disabled:bg-zinc-800 disabled:text-zinc-600 text-black rounded-full transition-all shadow-md hover:scale-102 active:scale-98 disabled:scale-100 cursor-pointer"
+                      className="flex items-center justify-center w-8 h-8 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-full transition-all shadow-sm hover:scale-102 active:scale-98 disabled:scale-100 cursor-pointer"
                       title="Send message"
                       aria-label="Send message"
                     >
@@ -852,10 +944,10 @@ export default function Chat() {
             </form>
             
             {/* Disclaimer & character tracker row */}
-            <div className="flex items-center justify-between px-3 mt-2 text-[10px] text-zinc-500 select-none tracking-wide">
+            <div className="flex items-center justify-between px-3 mt-2 text-[10px] text-slate-400 select-none tracking-wide">
               <span>Gemini can make mistakes. Verify important info.</span>
               <div className="font-sans">
-                <span className={input.length > CHARACTER_LIMIT ? 'text-red-400 font-bold' : ''}>
+                <span className={input.length > CHARACTER_LIMIT ? 'text-red-500 font-bold' : ''}>
                   {input.length}
                 </span>
                 <span> / {CHARACTER_LIMIT}</span>

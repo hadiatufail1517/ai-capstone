@@ -1,36 +1,53 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AI Capstone Project
+
+This project is a streaming AI Chatbot application.
+- **Frontend**: React + Vite + TypeScript
+- **Backend**: Node.js + Express + TypeScript
+- **AI Model**: Google Gemini (`gemini-3.5-flash-lite`)
 
 ## Getting Started
 
-First, run the development server:
-
+To install dependencies for both the frontend and backend:
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run install:all
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+To run both servers concurrently in development mode:
+```bash
+npm run dev
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Server-Side AI Tool: `websiteMetadata`
 
-## Learn More
+We have integrated a server-side AI tool named `websiteMetadata` that automatically extracts metadata from webpages upon request.
 
-To learn more about Next.js, take a look at the following resources:
+### Tool Name
+`websiteMetadata`
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Input Schema (Zod)
+```typescript
+import { z } from 'zod';
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+const websiteMetadataSchema = z.object({
+  url: z.string().describe('The URL of the webpage to fetch metadata for.')
+});
+```
 
-## Deploy on Vercel
+### Return Object Structure
+```json
+{
+  "title": "string",
+  "description": "string",
+  "image": "string | null",
+  "author": "string | null",
+  "keywords": "string[]"
+}
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Tool Lifecycle States & Frontend Rendering
+1. **input-streaming**: Renders the `ToolLoading` card with a spinner.
+2. **input-available**: Renders the `ToolInput` card showing `"Fetching metadata for https://..."`.
+3. **output-available**: Renders the beautiful `MetadataCard` component with the image preview, title, author, description, tags, and clickable link.
+4. **output-error**: Renders the `ToolError` card with a retry message.
