@@ -124,6 +124,24 @@ const MOCK_CHATS: ChatSession[] = [
   }
 ];
 
+const SUGGESTIONS = [
+  {
+    title: "Analyze Website Metadata",
+    description: "Extract metadata for https://react.dev and explain its contents.",
+    prompt: "Fetch website metadata for https://react.dev and summarize the page details."
+  },
+  {
+    title: "Verify SEO Tag Requirements",
+    description: "Analyze news.ycombinator.com for title, description, and OG image.",
+    prompt: "Fetch metadata for https://news.ycombinator.com and check if it has proper SEO tags (title, description, keywords, Open Graph image) and check if anything is missing."
+  },
+  {
+    title: "Generate Site Keyword Report",
+    description: "Analyze keywords for https://github.com and suggest key use cases.",
+    prompt: "Fetch metadata for https://github.com and generate a keyword report summarizing its primary use cases."
+  }
+];
+
 export default function Chat() {
   const [chats, setChats] = useState<ChatSession[]>(() => {
     // Attempt to load from localStorage, else fallback to MOCK_CHATS
@@ -208,52 +226,7 @@ export default function Chat() {
     textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
   }, [input]);
 
-  const handleSend = async (textToSend = input) => {
-    const trimmedInput = textToSend.trim();
-    if (!trimmedInput) return;
-    if (trimmedInput.length > CHARACTER_LIMIT) {
-      setError(`Message exceeds character limit.`);
-      return;
-    }
-    if (isGenerating) return;
-
-    setError(null);
-    setIsGenerating(true);
-    setIsThinking(true);
-    setInput('');
-    shouldAutoScrollRef.current = true;
-
-    // Create unique message IDs
-    const userMessageId = crypto.randomUUID();
-    const assistantMessageId = crypto.randomUUID();
-
-    const userMessage: Message = {
-      id: userMessageId,
-      role: 'user',
-      content: trimmedInput,
-    };
-
-    // Calculate updated messages list
-    const updatedMessages = [...currentMessages, userMessage];
-
-    // If we are sending in a fresh chat or mock chat, add user message
-    // Update the chats array
-    setChats(prev => prev.map(c => {
-      if (c.id === activeChatId) {
-        // If this was an empty chat, we can rename the title based on first query
-        const title = c.title === 'New Chat' || c.messages.length === 0
-          ? (trimmedInput.length > 24 ? trimmedInput.substring(0, 24) + '...' : trimmedInput)
-          : c.title;
-
-        return {
-          ...c,
-          title,
-          messages: [...c.messages, userMessage, { id: assistantMessageId, role: 'assistant', content: '', toolCalls: [] }]
-        };
-      }
-      return c;
-    }));
-
+  const startChatGeneration = async (updatedMessages: Message[], assistantMessageId: string) => {
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
@@ -359,6 +332,9 @@ export default function Chat() {
             }
           } catch (jsonErr) {
             console.error('Failed to parse chunk:', jsonErr);
+            if (jsonErr instanceof Error) {
+              throw jsonErr;
+            }
           }
         }
       }
@@ -368,7 +344,11 @@ export default function Chat() {
         console.log('Stream aborted.');
       } else {
         console.error('Stream failed:', err);
-        setError(err.message || 'A connection error occurred. Please verify your backend server.');
+        let errorMsg = err.message || 'A connection error occurred. Please verify your backend server.';
+        if (errorMsg.includes('429') || errorMsg.toLowerCase().includes('rate limit')) {
+          errorMsg = "You're sending requests too quickly. Please wait a moment and try again.";
+        }
+        setError(errorMsg);
         
         // Tag assistant response with error state
         setChats(prev => prev.map(c => {
@@ -379,7 +359,7 @@ export default function Chat() {
                 if (m.id === assistantMessageId) {
                   return {
                     ...m,
-                    content: m.content || 'An error occurred during response generation.',
+                    content: m.content,
                     isError: true
                   };
                 }
@@ -397,6 +377,92 @@ export default function Chat() {
     }
   };
 
+  const handleSend = async (textToSend = input) => {
+    const trimmedInput = textToSend.trim();
+    if (!trimmedInput) return;
+    if (trimmedInput.length > CHARACTER_LIMIT) {
+      setError(`Message exceeds character limit.`);
+      return;
+    }
+    if (isGenerating) return;
+
+    setError(null);
+    setIsGenerating(true);
+    setIsThinking(true);
+    setInput('');
+    shouldAutoScrollRef.current = true;
+
+    // Create unique message IDs
+    const userMessageId = crypto.randomUUID();
+    const assistantMessageId = crypto.randomUUID();
+
+    const userMessage: Message = {
+      id: userMessageId,
+      role: 'user',
+      content: trimmedInput,
+    };
+
+    // Calculate updated messages list
+    const updatedMessages = [...currentMessages, userMessage];
+
+    // If we are sending in a fresh chat or mock chat, add user message
+    // Update the chats array
+    setChats(prev => prev.map(c => {
+      if (c.id === activeChatId) {
+        // If this was an empty chat, we can rename the title based on first query
+        const title = c.title === 'New Chat' || c.messages.length === 0
+          ? (trimmedInput.length > 24 ? trimmedInput.substring(0, 24) + '...' : trimmedInput)
+          : c.title;
+
+        return {
+          ...c,
+          title,
+          messages: [...c.messages, userMessage, { id: assistantMessageId, role: 'assistant', content: '', toolCalls: [] }]
+        };
+      }
+      return c;
+    }));
+
+    await startChatGeneration(updatedMessages, assistantMessageId);
+  };
+
+  const handleRetry = async () => {
+    if (isGenerating) return;
+    if (!activeChat) return;
+
+    const messages = activeChat.messages;
+    const lastUserMsgIdx = [...messages].reverse().findIndex(m => m.role === 'user');
+    if (lastUserMsgIdx === -1) return;
+
+    const actualIdx = messages.length - 1 - lastUserMsgIdx;
+    const userMessage = messages[actualIdx];
+    const conversationBeforeUserMsg = messages.slice(0, actualIdx);
+
+    setError(null);
+    setIsGenerating(true);
+    setIsThinking(true);
+    shouldAutoScrollRef.current = true;
+
+    const assistantMessageId = crypto.randomUUID();
+
+    setChats(prev => prev.map(c => {
+      if (c.id === activeChatId) {
+        return {
+          ...c,
+          messages: [
+            ...conversationBeforeUserMsg,
+            userMessage,
+            { id: assistantMessageId, role: 'assistant', content: '', toolCalls: [] }
+          ]
+        };
+      }
+      return c;
+    }));
+
+    const updatedMessages = [...conversationBeforeUserMsg, userMessage];
+    await startChatGeneration(updatedMessages, assistantMessageId);
+  };
+
   const handleStop = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -408,7 +474,9 @@ export default function Chat() {
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      if (input.trim()) {
+        handleSend();
+      }
     }
   };
 
@@ -608,35 +676,37 @@ export default function Chat() {
           {chats.map((session) => {
             const isActive = session.id === activeChatId;
             return (
-              <button
+              <div
                 key={session.id}
-                onClick={() => {
-                  setActiveChatId(session.id);
-                  setError(null);
-                  if (window.innerWidth < 768) {
-                    setSidebarOpen(false); // Auto-close sidebar on mobile item tap
-                  }
-                }}
-                className={`w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-left text-sm transition-all group cursor-pointer ${
+                className={`w-full flex items-center justify-between rounded-lg transition-all group ${
                   isActive 
                     ? 'bg-blue-50 text-blue-700 font-semibold shadow-sm' 
                     : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
               >
-                <div className="flex items-center gap-2.5 overflow-hidden">
+                <button
+                  onClick={() => {
+                    setActiveChatId(session.id);
+                    setError(null);
+                    if (window.innerWidth < 768) {
+                      setSidebarOpen(false); // Auto-close sidebar on mobile item tap
+                    }
+                  }}
+                  className="flex-1 flex items-center gap-2.5 pl-3 pr-2 py-2.5 text-left text-sm cursor-pointer overflow-hidden min-w-0"
+                >
                   <MessageSquare className={`w-4 h-4 shrink-0 ${isActive ? 'text-blue-600' : 'text-slate-400'}`} />
                   <span className="truncate pr-1">{session.title}</span>
-                </div>
+                </button>
                 
                 {/* Delete history button */}
                 <button
                   onClick={(e) => handleDeleteChat(session.id, e)}
-                  className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-slate-200 text-slate-400 hover:text-red-600 transition-all cursor-pointer"
+                  className="opacity-0 group-hover:opacity-100 p-1 mr-2 rounded hover:bg-slate-200 text-slate-400 hover:text-red-600 transition-all cursor-pointer shrink-0"
                   title="Delete chat"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
-              </button>
+              </div>
             );
           })}
         </div>
@@ -695,29 +765,29 @@ export default function Chat() {
           {currentMessages.length === 0 ? (
             /* Elegant Empty State */
             <div className="flex flex-col items-center justify-center max-w-xl mx-auto h-full text-center space-y-8 py-12">
-              <div className="p-4 rounded-2xl bg-zinc-900 border border-zinc-800/60 shadow-xl flex items-center justify-center ring-4 ring-blue-500/5 select-none">
-                <Bot className="w-10 h-10 text-blue-500 animate-pulse" />
+              <div className="p-4 rounded-2xl bg-white border border-slate-200 shadow-lg flex items-center justify-center ring-4 ring-blue-500/5 select-none">
+                <Bot className="w-10 h-10 text-blue-600 animate-pulse" />
               </div>
               <div>
-                <h2 className="text-2xl font-bold text-white tracking-tight">What can I help you build?</h2>
-                <p className="text-zinc-400 mt-2 text-sm max-w-md mx-auto leading-relaxed">
-                  Start a new query or continue a previous conversation from the history sidebar on the left.
+                <h2 className="text-2xl font-bold text-slate-800 tracking-tight">How can I help?</h2>
+                <p className="text-slate-500 mt-2 text-sm max-w-md mx-auto leading-relaxed">
+                  Describe what you want to analyze or build.
                 </p>
               </div>
               
               {/* Starter Quick Actions */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full max-w-xl text-left select-none">
-                {MOCK_CHATS.map((item, idx) => (
+              <div className="grid grid-cols-1 gap-3 w-full max-w-xl text-left select-none">
+                {SUGGESTIONS.map((item, idx) => (
                   <button
                     key={idx}
-                    onClick={() => handleSend(item.messages[0].content)}
-                    className="p-4 rounded-xl bg-zinc-900/60 hover:bg-zinc-850 border border-zinc-800/80 hover:border-zinc-700 transition-all text-left flex flex-col group cursor-pointer shadow-sm hover:shadow-md"
+                    onClick={() => handleSend(item.prompt)}
+                    className="p-4 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 transition-all text-left flex flex-col group cursor-pointer shadow-sm hover:shadow-md hover:border-blue-200 active:scale-[0.99]"
                   >
-                    <span className="font-medium text-sm text-blue-400 group-hover:text-blue-300 flex items-center gap-1.5">
+                    <span className="font-semibold text-sm text-slate-800 group-hover:text-blue-600 flex items-center gap-1.5">
                       {item.title} 
-                      <Send className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" />
+                      <Send className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 text-blue-600 transition-all transform translate-x-[-4px] group-hover:translate-x-0" />
                     </span>
-                    <span className="text-xs text-zinc-500 mt-1 line-clamp-1">{item.messages[0].content}</span>
+                    <span className="text-xs text-slate-500 mt-1">{item.description}</span>
                   </button>
                 ))}
               </div>
@@ -743,7 +813,7 @@ export default function Chat() {
                     <div className={`relative group max-w-[85%] flex flex-col ${isUser ? 'items-end' : 'items-start flex-1'}`}>
                       {isUser ? (
                         /* User message pill (Cobalt Gray background) */
-                        <div className="px-5 py-2.5 rounded-3xl bg-[#2f2f2f] text-white text-sm leading-relaxed whitespace-pre-wrap shadow-sm">
+                        <div className="px-5 py-2.5 rounded-3xl bg-[#2f2f2f] text-white text-sm leading-relaxed whitespace-pre-wrap shadow-sm break-words">
                           {message.content}
                         </div>
                       ) : (
@@ -789,16 +859,31 @@ export default function Chat() {
                           })}
 
                           {message.content && (
-                            <div className={`w-full text-slate-800 text-sm space-y-2 leading-relaxed ${
-                              message.isError 
-                                ? 'px-4 py-3 rounded-2xl bg-red-50 text-red-800 border border-red-200' 
-                                : ''
-                            } ${
+                            <div className={`w-full text-slate-800 text-sm space-y-2 leading-relaxed break-words ${
                               isGenerating && currentMessages[currentMessages.length - 1].id === message.id 
                                 ? 'streaming-cursor' 
                                 : ''
                             }`}>
                               {parseMarkdown(message.content)}
+                            </div>
+                          )}
+
+                          {message.isError && (
+                            <div className="mt-2 w-full max-w-md p-4 rounded-xl bg-red-50 border border-red-200 text-red-800 flex flex-col gap-2 shadow-sm select-none">
+                              <div className="flex items-center gap-2">
+                                <AlertCircle className="w-4.5 h-4.5 text-red-500 shrink-0" />
+                                <span className="font-semibold text-sm font-sans text-red-800">Something went wrong</span>
+                              </div>
+                              <p className="text-xs text-red-700 font-sans leading-relaxed">
+                                {message.content ? "The response could not be completed. Please check your connection and try again." : "The response could not be started. Check your network or API status."}
+                              </p>
+                              <button 
+                                onClick={handleRetry}
+                                className="mt-2 w-fit flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-100 hover:bg-red-200 border border-red-300 text-xs text-red-700 font-semibold transition-all cursor-pointer shadow-sm active:scale-97 hover:scale-102"
+                              >
+                                <RefreshCw className="w-3.5 h-3.5" />
+                                <span className="font-sans">Retry</span>
+                              </button>
                             </div>
                           )}
                         </div>
@@ -840,13 +925,17 @@ export default function Chat() {
 
               {/* Gemini Server-Sent Event (SSE) Thinking state */}
               {isThinking && (
-                <div className="flex gap-4 items-start justify-start">
-                  <div className="w-8 h-8 rounded-full bg-white border border-slate-200 flex items-center justify-center text-blue-600 shadow-sm shrink-0 select-none">
+                <div className="flex gap-4 items-start justify-start animate-pulse">
+                  <div className="w-8 h-8 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-blue-500 shadow-md shrink-0 select-none">
                     <Bot className="w-4 h-4" />
                   </div>
-                  <div className="flex items-center gap-2 text-slate-500 shadow-sm text-sm py-1.5">
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600" />
-                    <span className="font-sans select-none">Thinking...</span>
+                  <div className="flex flex-col gap-2.5 max-w-md w-full py-1">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                      <RefreshCw className="w-3 h-3 animate-spin text-blue-500" />
+                      <span>Gemini is thinking...</span>
+                    </div>
+                    <div className="h-4 bg-slate-200 rounded w-3/4 animate-pulse"></div>
+                    <div className="h-4 bg-slate-200 rounded w-1/2 animate-pulse"></div>
                   </div>
                 </div>
               )}

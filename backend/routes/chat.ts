@@ -44,7 +44,10 @@ async function runGeminiStream(
     } catch {
       errorJson = null;
     }
-    throw new Error(errorJson?.error?.message || errorJson?.error || `HTTP error! Status: ${response.status} - ${errorText}`);
+    const message = errorJson?.error?.message || errorJson?.error || `HTTP error! Status: ${response.status} - ${errorText}`;
+    const err = new Error(message) as any;
+    err.status = response.status;
+    throw err;
   }
 
   const reader = response.body?.getReader();
@@ -68,14 +71,29 @@ async function runGeminiStream(
     for (const line of lines) {
       const cleanLine = line.trim();
       if (!cleanLine.startsWith('data: ')) continue;
-      
+
       const rawData = cleanLine.substring(6);
       if (rawData === '[DONE]') continue;
 
       try {
         const parsed = JSON.parse(rawData);
-        const part = parsed.candidates?.[0]?.content?.parts?.[0];
         
+        if (parsed.error) {
+          throw new Error(parsed.error.message || 'Stream error from Gemini API.');
+        }
+
+        const candidate = parsed.candidates?.[0];
+        if (candidate?.finishReason && candidate.finishReason !== 'STOP' && candidate.finishReason !== 'MAX_TOKENS') {
+          if (candidate.finishReason === 'SAFETY') {
+            throw new Error('Response generation blocked due to safety settings.');
+          } else if (candidate.finishReason === 'RECITATION') {
+            throw new Error('Response generation blocked due to recitation check.');
+          } else {
+            throw new Error(`Response generation stopped (Reason: ${candidate.finishReason}).`);
+          }
+        }
+
+        const part = candidate?.content?.parts?.[0];
         if (part) {
           if (part.text) {
             accumulatedText += part.text;
@@ -85,7 +103,15 @@ async function runGeminiStream(
             detectedFunctionCall = part.functionCall;
           }
         }
-      } catch (jsonErr) {
+      } catch (jsonErr: any) {
+        if (jsonErr.message && (
+          jsonErr.message.includes('safety') || 
+          jsonErr.message.includes('stopped') || 
+          jsonErr.message.includes('Stream error') || 
+          jsonErr.message.includes('recitation')
+        )) {
+          throw jsonErr;
+        }
         console.error('[Error] Failed to parse Gemini SSE line:', jsonErr, 'Raw line:', cleanLine);
       }
     }
@@ -302,12 +328,20 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 
     // If headers have not been sent yet, send a clean JSON error response
     if (!res.headersSent) {
-      res.status(500).json({ 
-        error: err.message || 'An error occurred while communicating with the Gemini service.' 
+      const statusCode = err.status === 429 ? 429 : 500;
+      const clientMessage = err.status === 429 
+        ? "You're sending requests too quickly. Please wait a moment and try again." 
+        : (err.message || 'An error occurred while communicating with the Gemini service.');
+      
+      res.status(statusCode).json({
+        error: clientMessage
       });
     } else {
       // If we are already streaming, send the error in SSE format and close connection
-      res.write(`data: ${JSON.stringify({ error: err.message || 'An error occurred during streaming.' })}\n\n`);
+      const clientMessage = err.status === 429
+        ? "You're sending requests too quickly. Please wait a moment and try again."
+        : (err.message || 'An error occurred during streaming.');
+      res.write(`data: ${JSON.stringify({ error: clientMessage })}\n\n`);
       res.end();
     }
   }
