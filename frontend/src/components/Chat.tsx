@@ -49,7 +49,7 @@ interface ChatSession {
   messages: Message[];
 }
 
-const CHARACTER_LIMIT = 2000;
+const CHARACTER_LIMIT = 4000;
 const buildApiUrl = (): string => {
   const envUrl = import.meta.env.VITE_API_URL;
   if (envUrl && envUrl.trim() !== "") {

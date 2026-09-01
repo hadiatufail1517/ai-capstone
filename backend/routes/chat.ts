@@ -120,12 +120,47 @@ async function runGeminiStream(
   return { text: accumulatedText, functionCall: detectedFunctionCall };
 }
 
+export const maxDuration = 30;
+
+const MAX_INPUT_LENGTH = 4000;
+const MAX_MESSAGES = 30;
+
 router.post('/', async (req: Request, res: Response): Promise<void> => {
   const { messages } = req.body;
 
-  // Basic validation
+  // 1. Structure validation
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     res.status(400).json({ error: 'Invalid or empty messages array provided.' });
+    return;
+  }
+
+  // 2. Conversation length limit
+  if (messages.length > MAX_MESSAGES) {
+    res.status(400).json({ 
+      error: `Maximum conversation limit exceeded. Please limit your conversation history to ${MAX_MESSAGES} messages or start a new chat.` 
+    });
+    return;
+  }
+
+  // 3. Message validation & input character limit check
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (!m || typeof m !== 'object' || !m.role) {
+      res.status(400).json({ error: `Message at index ${i} is invalid.` });
+      return;
+    }
+    if (typeof m.content === 'string' && m.content.length > MAX_INPUT_LENGTH) {
+      res.status(400).json({
+        error: `Message content exceeds the maximum allowed length of ${MAX_INPUT_LENGTH} characters.`
+      });
+      return;
+    }
+  }
+
+  // 4. Verify latest user message exists and is non-empty
+  const lastMsg = messages[messages.length - 1];
+  if (!lastMsg || lastMsg.role !== 'user' || typeof lastMsg.content !== 'string' || !lastMsg.content.trim()) {
+    res.status(400).json({ error: 'The last message must be a non-empty user prompt.' });
     return;
   }
 
@@ -203,8 +238,17 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 
   const controller = new AbortController();
 
+  // 30 second maximum stream duration safeguard
+  const streamTimeout = setTimeout(() => {
+    if (!controller.signal.aborted) {
+      console.log('[SSE] Stream execution timed out after 30 seconds.');
+      controller.abort();
+    }
+  }, 30000);
+
   // Handle client disconnect (aborting the connection via AbortController on client)
   res.on('close', () => {
+    clearTimeout(streamTimeout);
     if (!res.writableEnded && !controller.signal.aborted) {
       controller.abort();
       console.log('[SSE] Gemini API streaming request aborted due to client disconnect.');
@@ -311,14 +355,19 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       break;
     }
 
+    clearTimeout(streamTimeout);
     // Send closing tag to signal client that streaming is complete
     res.write('data: [DONE]\n\n');
     res.end();
 
   } catch (err: any) {
+    clearTimeout(streamTimeout);
     if (err.name === 'AbortError') {
-      console.log('[SSE] Gemini stream aborted successfully.');
-      if (!res.writableEnded) {
+      console.log('[SSE] Gemini stream aborted or timed out.');
+      if (!res.headersSent) {
+        res.status(504).json({ error: 'Request timed out or was aborted.' });
+      } else if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ error: 'Stream request timed out.' })}\n\n`);
         res.end();
       }
       return;
@@ -326,12 +375,18 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 
     console.error('[Error] Error generating stream response:', err);
 
+    // Sanitize error message to ensure secrets/keys/stack traces are never exposed
+    let rawMsg = err.message || '';
+    if (rawMsg.includes('key=') || rawMsg.includes('GEMINI_API_KEY') || rawMsg.includes('AQ.')) {
+      rawMsg = 'An error occurred while communicating with the AI provider.';
+    }
+
     // If headers have not been sent yet, send a clean JSON error response
     if (!res.headersSent) {
       const statusCode = err.status === 429 ? 429 : 500;
       const clientMessage = err.status === 429 
         ? "You're sending requests too quickly. Please wait a moment and try again." 
-        : (err.message || 'An error occurred while communicating with the Gemini service.');
+        : rawMsg || 'An error occurred while communicating with the Gemini service.';
       
       res.status(statusCode).json({
         error: clientMessage
@@ -340,7 +395,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       // If we are already streaming, send the error in SSE format and close connection
       const clientMessage = err.status === 429
         ? "You're sending requests too quickly. Please wait a moment and try again."
-        : (err.message || 'An error occurred during streaming.');
+        : rawMsg || 'An error occurred during streaming.';
       res.write(`data: ${JSON.stringify({ error: clientMessage })}\n\n`);
       res.end();
     }
